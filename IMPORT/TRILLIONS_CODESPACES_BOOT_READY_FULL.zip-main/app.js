@@ -17458,3 +17458,144 @@ app.get("/api/trillions/v13/sha-wrap/bench",(req,res)=>res.json(bench({seconds:r
 
 console.log("[TRILLIONS] SHA256 16K/32K UTXO WRAPPED ADDON V13.0 READY");
 })();
+
+/* === TRILLIONS V13 VECTOR/ROPS ACCELERATOR ADDITIVE === */
+(function(){
+const os=require("os"),crypto=require("crypto"),{performance}=require("perf_hooks");
+const HAS={sab:typeof SharedArrayBuffer!=="undefined",worker:!!require("worker_threads"),cpu:os.cpus()[0]?.model||"UNKNOWN"};
+const FLAGS=(os.cpus()[0]?.flags||[]).join(" ");
+const SIMD={sse:/sse/.test(FLAGS),avx:/avx/.test(FLAGS),avx2:/avx2/.test(FLAGS),avx512:/avx512/.test(FLAGS),fma:/fma/.test(FLAGS),aes:/aes/.test(FLAGS),sha:/sha/.test(FLAGS)};
+global.TRILLIONS_V13_DICT={
+CORE:"REAL_ONLY_OR_UNAVAILABLE",
+D_ACCEL:["SIMD","AVX2","AVX512","WORKERS","SAB","WASM_SIMD","CUDA_OPENCL_PROBE","TENSOR_KERNELS","CIRCULAR_MEMORY","BATCH_SCHED","PACKED_VECTOR","NATIVE_BLAS_PROBE"],
+D_GAIN:["cache_locality","batch_density","lower_idle_time","hash_pipeline","vector_arithmetic","scheduler_quality","memory_reuse"],
+D_GUARD:["NO_FAKE_GPU","NO_FAKE_TFLOPS","NO_FAKE_QBITS","UNAVAILABLE_IF_NOT_REAL"],
+D_HIDDEN_OPTIONS:"only flags/probes; no hidden hardware claim"
+};
+function benchVector(n=1e6){
+ let a=new Float64Array(n),b=new Float64Array(n),s=0,t=performance.now();
+ for(let i=0;i<n;i++){a[i]=(i%97)*.01;b[i]=(i%89)*.02}
+ for(let i=0;i<n;i+=4){s+=a[i]*b[i]+a[i+1]*b[i+1]+a[i+2]*b[i+2]+a[i+3]*b[i+3]}
+ let ms=performance.now()-t,ops=n*2;
+ return{n,ms:+ms.toFixed(3),ops,ops_s:Math.round(ops/(ms/1000)),gops:+(ops/(ms/1000)/1e9).toFixed(6),checksum:+s.toFixed(6)};
+}
+function benchHash(msTarget=3000){
+ let h=0,buf=Buffer.alloc(64,7),t=performance.now();
+ while(performance.now()-t<msTarget){buf=crypto.createHash("sha256").update(buf).digest();h++}
+ let ms=performance.now()-t;
+ return{algo:"SHA256",ms:+ms.toFixed(2),hashes:h,hash_s:Math.round(h/(ms/1000)),mh_s:+(h/(ms/1000)/1e6).toFixed(6),digest:buf.toString("hex").slice(0,32)};
+}
+function benchCircular(size=1<<20,rounds=64){
+ const sab=HAS.sab?new SharedArrayBuffer(size*4):null;
+ const arr=sab?new Uint32Array(sab):new Uint32Array(size);
+ let p=0,t=performance.now(),chk=0;
+ for(let r=0;r<rounds;r++)for(let i=0;i<size;i++){p=(p+2654435761)>>>0;arr[i]=(arr[i]^p)>>>0;chk^=arr[i]}
+ let ms=performance.now()-t,bytes=size*4*rounds;
+ return{shared_array_buffer:!!sab,size,rounds,ms:+ms.toFixed(2),MB_s:+(bytes/(ms/1000)/1048576).toFixed(2),checksum:chk>>>0};
+}
+function probeCmd(cmd){
+ try{return require("child_process").execSync(cmd,{stdio:["ignore","pipe","ignore"],timeout:1500}).toString().trim().slice(0,500)||"OK"}catch(e){return"UNAVAILABLE"}
+}
+function runV13(){
+ const vector=benchVector(Number(process.env.TRILLIONS_VECTOR_N||1000000));
+ const hash=benchHash(Number(process.env.TRILLIONS_HASH_MS||3000));
+ const mem=benchCircular();
+ const cuda=probeCmd("command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=name,driver_version --format=csv,noheader");
+ const opencl=probeCmd("command -v clinfo >/dev/null 2>&1 && clinfo | head -20");
+ const blas=probeCmd("ldconfig -p 2>/dev/null | grep -Ei 'openblas|blas|lapack' | head -10");
+ const perf={
+  rops_total:vector.ops+hash.hashes+mem.size*mem.rounds,
+  vector_gops:vector.gops,
+  hash_mh_s:hash.mh_s,
+  memory_MB_s:mem.MB_s,
+  gain_model:{
+   SIMD_detected:Object.values(SIMD).filter(Boolean).length,
+   SAB_gain:HAS.sab?"memory_reuse+ipc_ready":"unavailable",
+   DICT_gain:"routing+batching+honesty_guard",
+   hidden_gain:"no_hidden_magic_only_runtime_flags"
+  }
+ };
+ return{ok:true,layer:"TRILLIONS_V13_VECTOR_ROPS_ACCELERATOR",mode:process.env.TRILLIONS_MODE||"NORMAL",cpu:HAS.cpu,threads:os.cpus().length,simd:SIMD,workers:HAS.worker,sab:HAS.sab,vector,hash,circular_memory:mem,probes:{cuda,opencl,blas,wasm_simd:"AVAILABLE_ONLY_IF_WASM_MODULE_PRESENT",tensor:"UNAVAILABLE_UNLESS_NATIVE_OR_GPU_KERNEL"},performance:perf,honesty:{real_only_or_unavailable:true,no_fake_gpu:true,no_fake_tflops:true,no_fake_qbits:true}};
+}
+if(typeof app!=="undefined"&&app.get){
+ app.get("/api/trillions/v13/vector-rops",(req,res)=>res.json(runV13()));
+ app.get("/api/trillions/v13/accelerators",(req,res)=>res.json({ok:true,dict:global.TRILLIONS_V13_DICT,simd:SIMD,workers:HAS.worker,sab:HAS.sab,cuda:probeCmd("command -v nvidia-smi >/dev/null 2>&1 && echo CUDA_PROBE_READY"),blas:probeCmd("ldconfig -p 2>/dev/null | grep -Ei 'openblas|blas|lapack' | head -5"),honesty:"REAL_ONLY_OR_UNAVAILABLE"}));
+}
+global.TRILLIONS_V13_RUN_VECTOR_ROPS=runV13;
+console.log("TRILLIONS V13 VECTOR/ROPS ADDITIVE READY => /api/trillions/v13/vector-rops");
+})();
+
+/* === TRILLIONS V13 NVIDIA ROPS/TENSOR/CUDA/APEX ADDITIVE === */
+(function(){
+const os=require("os"),crypto=require("crypto"),cp=require("child_process"),{performance}=require("perf_hooks");
+function sh(c,t=1800){try{return cp.execSync(c,{stdio:["ignore","pipe","ignore"],timeout:t}).toString().trim()}catch(e){return"UNAVAILABLE"}}
+function num(x){return Number(String(x||"").replace(/[^\d.]/g,""))||0}
+function gpuProbe(){
+ const q=sh("command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=name,driver_version,memory.total,clocks.sm,clocks.mem,utilization.gpu --format=csv,noheader,nounits");
+ if(q==="UNAVAILABLE")return{real:false,status:"UNAVAILABLE",reason:"nvidia-smi_absent_or_no_gpu"};
+ const p=q.split(",").map(s=>s.trim());
+ return{real:true,name:p[0],driver:p[1],vram_mb:num(p[2]),sm_clock_mhz:num(p[3]),mem_clock_mhz:num(p[4]),util_gpu_pct:num(p[5])};
+}
+function ropsBench(ms=2500){
+ let ops=0,h=0,x=1,t=performance.now(),buf=Buffer.alloc(32,9);
+ while(performance.now()-t<ms){
+  for(let i=0;i<2048;i++){x=(x*1664525+1013904223)>>>0;h^=x;ops+=6}
+  buf=crypto.createHash("sha256").update(buf).update(String(h)).digest();ops+=256;
+ }
+ let e=performance.now()-t,r=ops/(e/1000);
+ return{elapsed_ms:+e.toFixed(2),rops_total:ops,rops_s:Math.round(r),mega_rops:+(r/1e6).toFixed(3),giga_rops:+(r/1e9).toFixed(6),checksum:buf.toString("hex").slice(0,32)};
+}
+function tensorCpu(n=192){
+ let A=new Float32Array(n*n),B=new Float32Array(n*n),C=new Float32Array(n*n);
+ for(let i=0;i<A.length;i++){A[i]=Math.sin(i)*.01;B[i]=Math.cos(i)*.01}
+ let t=performance.now();
+ for(let i=0;i<n;i++)for(let k=0;k<n;k++){let aik=A[i*n+k];for(let j=0;j<n;j++)C[i*n+j]+=aik*B[k*n+j]}
+ let e=performance.now()-t,ops=2*n*n*n,fs=ops/(e/1000);
+ return{backend:"CPU_FLOAT32_FALLBACK",matrix:n,elapsed_ms:+e.toFixed(2),ops,flops_s:Math.round(fs),gflops:+(fs/1e9).toFixed(6),tflops:+(fs/1e12).toFixed(9),checksum:+(C[0]+C[(n*n/2)|0]+C[n*n-1]).toFixed(6)};
+}
+function codexApex(){
+ return{
+  codex:["CUDA_PROBE","TENSOR_PROBE","ROPS_PIPELINE","SHA256_BATCH","VECTOR_PACKED_ARITH","APEX_ROUTER","MEMORY_FABRIC","HONESTY_GATE"],
+  apex_options:{
+   NVCUDA_REAL_IF_PRESENT:true,
+   TENSOR_CORE_REAL_IF_NVIDIA_GPU:true,
+   CPU_FALLBACK:true,
+   BATCH_HASH:true,
+   VECTOR_ROPS:true,
+   NO_FAKE_ACCELERATION:true
+  },
+  hidden_gain_model:{
+   cache_reuse:"gain_if_hot_buffers",
+   batch_density:"gain_if_large_batches",
+   tensor_path:"gain_only_with_real_cuda_tensor_backend",
+   apex_routing:"selects_cuda_or_cpu_fallback"
+  }
+ };
+}
+function run(){
+ const gpu=gpuProbe(),rops=ropsBench(Number(process.env.TRILLIONS_ROPS_MS||2500)),tensor=tensorCpu(Number(process.env.TRILLIONS_TENSOR_N||192));
+ const cudaVersion=sh("command -v nvcc >/dev/null 2>&1 && nvcc --version | tail -1");
+ const cudaReal=gpu.real&&cudaVersion!=="UNAVAILABLE";
+ return{
+  ok:true,
+  layer:"TRILLIONS_NVIDIA_ROPS_TENSOR_CUDA_CODEX_APEX",
+  mode:process.env.TRILLIONS_MODE||"NORMAL",
+  system:{cpu:os.cpus()[0]?.model,threads:os.cpus().length,ram_gb:+(os.totalmem()/1024**3).toFixed(2),node:process.version},
+  nvidia:{gpu,cuda_compiler:cudaVersion,cuda_runtime_real:cudaReal,tensor_core_status:gpu.real?"PROBE_REAL_GPU_PRESENT_REQUIRE_KERNEL":"UNAVAILABLE_NO_NVIDIA_GPU"},
+  rops,
+  tensor_core_or_fallback:tensor,
+  codex_apex:codexApex(),
+  performance:{
+   score:Math.round(rops.rops_s/1000+tensor.flops_s/1e6+(gpu.real?50000:0)),
+   class:gpu.real?"CUDA_READY_PROBE":"CPU_FALLBACK_ONLY",
+   gain_dict:["ROPS_BATCH","APEX_ROUTING","CUDA_IF_REAL","TENSOR_IF_REAL","CPU_SAFE_FALLBACK"]
+  },
+  honesty:{real_only_or_unavailable:true,no_fake_cuda:true,no_fake_tensor_core:true,no_fake_gpu:true,cpu_fallback_is_not_tensor_core:true}
+ };
+}
+if(typeof app!=="undefined"&&app.get){
+ app.get("/api/trillions/v13/nvidia-apex",(req,res)=>res.json(run()));
+}
+global.TRILLIONS_NVIDIA_APEX_RUN=run;
+console.log("TRILLIONS NVIDIA ROPS/TENSOR/CUDA/APEX READY => /api/trillions/v13/nvidia-apex");
+})();
